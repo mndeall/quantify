@@ -8,7 +8,7 @@ import scipy.optimize as optimization
 
 # ── App Setup ─────────────────────────────────────────────────
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
-app.title = "Quant Research Dashboard"
+app.title = "Quantify"
 
 # ── Colors ────────────────────────────────────────────────────
 C = {
@@ -139,22 +139,22 @@ def nav_link(label, number, href, active):
     Output('sidebar', 'children'),
     Input('url', 'pathname')
 )
-def update_sidebar(pathname):
+def sidebar(pathname):
     return [
         # Logo
         html.Div([
             html.Div("📈", style={'fontSize': '28px'}),
-            html.Div("QUANT", style={
+            html.Div("QUANTIFY", style={
                 'color': C['blue'],
                 'fontFamily': 'monospace',
                 'fontWeight': 'bold',
-                'fontSize': '18px',
+                'fontSize': '16px',
                 'letterSpacing': '0.2em'
             }),
-            html.Div("DASHBOARD", style={
+            html.Div("RESEARCH DASHBOARD", style={
                 'color': C['muted'],
                 'fontFamily': 'monospace',
-                'fontSize': '10px',
+                'fontSize': '9px',
                 'letterSpacing': '0.3em'
             }),
         ], style={'marginBottom': '40px', 'textAlign': 'center'}),
@@ -168,12 +168,12 @@ def update_sidebar(pathname):
             'marginBottom': '12px'
         }),
 
-        # Nav links — active state based on current URL
-        nav_link("Stock Analyzer",     "01", '/',
+        # Nav links
+        nav_link("Stock Analyzer",      "01", '/',
                  pathname == '/' or pathname == ''),
-        nav_link("Stock Screener",     "02", '/screener',
+        nav_link("Stock Screener",      "02", '/screener',
                  pathname == '/screener'),
-        nav_link("Portfolio Optimizer","03", '/optimizer',
+        nav_link("Portfolio Optimizer", "03", '/optimizer',
                  pathname == '/optimizer'),
     ]
 
@@ -727,5 +727,10 @@ def update_optimizer(tickers_str):
 
 
 # ── Run ───────────────────────────────────────────────────────
+import os
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 8050)),
+        debug=False
+    )
