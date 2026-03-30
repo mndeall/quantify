@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import scipy.optimize as optimization
 import os
+from functools import lru_cache
 
 # ── App Setup ─────────────────────────────────────────────────
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
@@ -34,6 +35,17 @@ SP500_TOP30 = [
     'BAC', 'KO', 'PEP', 'AVGO', 'LLY',
     'TMO', 'ORCL', 'ACN', 'MCD', 'NKE'
 ]
+
+# ── Caching — avoids re-downloading same ticker in same session ──
+@lru_cache(maxsize=32)
+def get_data(ticker, period):
+    """
+    Downloads and caches stock data for a given ticker and period.
+    lru_cache stores the result so repeated calls with the same
+    ticker don't trigger a new network request.
+    """
+    return yf.download(ticker, period=period, auto_adjust=True)
+
 
 # ── Main Layout ───────────────────────────────────────────────
 app.layout = html.Div([
@@ -200,8 +212,8 @@ def update_sidebar(pathname):
 def page_analyzer():
     """
     Layout for Page 1 — Stock Analyzer.
-    Contains a ticker input, metric cards, price chart,
-    RSI indicator chart, and daily returns bar chart.
+    Contains a ticker input, metric cards, price chart with
+    loading spinners, RSI indicator chart, and daily returns chart.
     All charts are populated by the update_analyzer callback.
     """
     return html.Div([
@@ -241,11 +253,15 @@ def page_analyzer():
             'marginBottom': '40px', 'flexWrap': 'wrap'
         }),
 
-        dcc.Graph(id='price-chart'),
+        # Loading spinners wrap each chart
+        dcc.Loading(children=[dcc.Graph(id='price-chart')],
+                    type='circle', color=C['blue']),
         gap(),
-        dcc.Graph(id='rsi-chart'),
+        dcc.Loading(children=[dcc.Graph(id='rsi-chart')],
+                    type='circle', color=C['purple']),
         gap(),
-        dcc.Graph(id='returns-chart'),
+        dcc.Loading(children=[dcc.Graph(id='returns-chart')],
+                    type='circle', color=C['green']),
         gap(),
     ])
 
@@ -254,7 +270,7 @@ def page_screener():
     """
     Layout for Page 2 — Stock Screener.
     Auto-loads on mount using a one-shot dcc.Interval trigger.
-    Results are populated by the update_screener callback.
+    Uses batch download for speed. Results populated by update_screener.
     """
     return html.Div([
         html.Div("02 / STOCK SCREENER", style={
@@ -281,7 +297,7 @@ def page_optimizer():
     """
     Layout for Page 3 — Portfolio Optimizer.
     User enters comma-separated tickers.
-    Results are populated by the update_optimizer callback which runs
+    Results populated by update_optimizer which runs
     Monte Carlo simulation and Markowitz optimization.
     """
     return html.Div([
@@ -325,9 +341,11 @@ def page_optimizer():
             'marginBottom': '40px', 'flexWrap': 'wrap'
         }),
 
-        dcc.Graph(id='frontier-chart'),
+        dcc.Loading(children=[dcc.Graph(id='frontier-chart')],
+                    type='circle', color=C['purple']),
         gap(),
-        dcc.Graph(id='weights-chart'),
+        dcc.Loading(children=[dcc.Graph(id='weights-chart')],
+                    type='circle', color=C['purple']),
         gap(),
     ])
 
@@ -368,11 +386,11 @@ def display_page(pathname):
 def update_analyzer(ticker):
     """
     Triggered when the user types a ticker symbol.
-    Downloads 1 year of daily OHLCV data from Yahoo Finance.
+    Uses lru_cache via get_data() to avoid redundant downloads.
 
     Calculates:
     - Total return, annualized return, annualized volatility
-    - Sharpe ratio (return / volatility)
+    - Sharpe ratio using risk-free rate of 2% (more accurate)
     - Maximum drawdown (worst peak-to-trough decline)
     - RSI (14-day Relative Strength Index)
     - 50-day and 200-day moving averages
@@ -386,8 +404,9 @@ def update_analyzer(ticker):
     ticker = ticker.upper().strip()
 
     try:
-        df = yf.download(ticker, period='1y', auto_adjust=True)
-    except Exception:
+        df = get_data(ticker, '1y')
+    except Exception as e:
+        print(f"[ERROR]: {e}")
         df = pd.DataFrame()
 
     if df.empty:
@@ -402,11 +421,12 @@ def update_analyzer(ticker):
     returns = close.pct_change().dropna()
 
     # ── Metrics ───────────────────────────────────────────────
-    annual_return = returns.mean() * 252
-    annual_vol    = returns.std() * np.sqrt(252)
-    sharpe        = annual_return / annual_vol
-    max_dd        = ((close - close.cummax()) / close.cummax()).min()
-    total_return  = (close.iloc[-1] / close.iloc[0]) - 1
+    annual_return  = returns.mean() * 252
+    annual_vol     = returns.std() * np.sqrt(252)
+    risk_free_rate = 0.02
+    sharpe         = (annual_return - risk_free_rate) / annual_vol
+    max_dd         = ((close - close.cummax()) / close.cummax()).min()
+    total_return   = (close.iloc[-1] / close.iloc[0]) - 1
 
     # ── RSI (14-day) ──────────────────────────────────────────
     delta = close.diff()
@@ -421,8 +441,8 @@ def update_analyzer(ticker):
     last_price = close.iloc[-1]
     last_ma50  = ma50.iloc[-1]
 
-    # Signal logic: BUY if oversold + above MA50, SELL if overbought
-    # + below MA50, otherwise HOLD
+    # Signal: BUY if oversold + above MA50
+    # SELL if overbought + below MA50, else HOLD
     if last_rsi < 35 and last_price > last_ma50:
         sig = ("BUY",  C['green'])
     elif last_rsi > 65 and last_price < last_ma50:
@@ -525,45 +545,57 @@ def update_analyzer(ticker):
 )
 def update_screener(n):
     """
-    Triggered once automatically when the screener page loads
-    via a dcc.Interval with max_intervals=1.
+    Triggered once automatically when the screener page loads.
+    Uses batch download (all 30 tickers in one request) for speed.
 
-    Downloads 1 year of data for all 30 S&P 500 stocks,
-    calculates key metrics for each, sorts by Sharpe ratio,
-    and renders a scrollable ranked table.
-
-    Metrics per stock:
+    Calculates per stock:
     - Annualized return and volatility
-    - Sharpe ratio (primary sort key)
+    - Sharpe ratio with 2% risk-free rate (primary sort key)
     - 20-day price momentum
     - Maximum drawdown
+
+    Renders a scrollable ranked table sorted by Sharpe ratio.
     """
     if n is None:
         return html.P("Loading...",
                       style={'color': C['muted'],
                              'fontFamily': 'monospace'})
 
+    # Batch download — all 30 tickers in one request (much faster)
+    try:
+        data = yf.download(
+            SP500_TOP30,
+            period='1y',
+            auto_adjust=True,
+            group_by='ticker',
+            threads=True,
+            progress=False
+        )
+    except Exception as e:
+        print(f"[ERROR]: {e}")
+        return html.P("Failed to load data.",
+                      style={'color': C['muted'],
+                             'fontFamily': 'monospace'})
+
     results = []
     for ticker in SP500_TOP30:
         try:
-            df = yf.download(ticker, period='1y',
-                             auto_adjust=True, progress=False)
+            df = data[ticker].dropna()
             if df.empty:
                 continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
 
-            close   = df['Close'].squeeze()
+            close   = df['Close']
             returns = close.pct_change().dropna()
             if len(returns) < 20:
                 continue
 
-            annual_return = returns.mean() * 252
-            annual_vol    = returns.std() * np.sqrt(252)
-            sharpe        = annual_return / annual_vol
-            momentum      = (close.iloc[-1] / close.iloc[-20]) - 1
-            max_dd        = ((close - close.cummax()) /
-                             close.cummax()).min()
+            annual_return  = returns.mean() * 252
+            annual_vol     = returns.std() * np.sqrt(252)
+            risk_free_rate = 0.02
+            sharpe         = (annual_return - risk_free_rate) / annual_vol
+            momentum       = (close.iloc[-1] / close.iloc[-20]) - 1
+            max_dd         = ((close - close.cummax()) /
+                              close.cummax()).min()
 
             results.append({
                 'Ticker':         ticker,
@@ -574,7 +606,8 @@ def update_screener(n):
                 'Max Drawdown':   f"{max_dd:.1%}",
                 '_sharpe':        sharpe
             })
-        except Exception:
+        except Exception as e:
+            print(f"[ERROR] {ticker}: {e}")
             continue
 
     if not results:
@@ -683,8 +716,8 @@ def update_optimizer(tickers_str):
     2. Calculate log returns and covariance matrix
     3. Run Monte Carlo simulation (5,000 random portfolios)
        to approximate the efficient frontier
-    4. Use scipy SLSQP optimization to find the portfolio
-       that maximizes the Sharpe ratio
+    4. Use scipy SLSQP to find weights that maximize Sharpe ratio
+       using a 2% risk-free rate for accuracy
     5. Return metric cards, efficient frontier scatter plot,
        and optimal weights bar chart
 
@@ -704,7 +737,8 @@ def update_optimizer(tickers_str):
         data = yf.download(tickers, period='2y',
                            auto_adjust=True,
                            progress=False)['Close']
-    except Exception:
+    except Exception as e:
+        print(f"[ERROR]: {e}")
         return [], empty, empty
 
     if isinstance(data, pd.Series):
@@ -721,7 +755,8 @@ def update_optimizer(tickers_str):
         """Calculate annualized return, volatility, and Sharpe for weights w."""
         ret = np.sum(returns.mean() * w) * 252
         vol = np.sqrt(np.dot(w.T, np.dot(returns.cov() * 252, w)))
-        return ret, vol, ret / vol
+        rf  = 0.02
+        return ret, vol, (ret - rf) / vol
 
     # ── Monte Carlo Simulation ────────────────────────────────
     mc_ret, mc_vol, mc_sharpe = [], [], []
