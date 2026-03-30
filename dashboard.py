@@ -5,6 +5,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import scipy.optimize as optimization
+import os
 
 # ── App Setup ─────────────────────────────────────────────────
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
@@ -38,7 +39,6 @@ SP500_TOP30 = [
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
 
-    # Sidebar — dynamic (rebuilt by callback to show active state)
     html.Div(id='sidebar', style={
         'width': '220px',
         'minHeight': '100vh',
@@ -50,7 +50,6 @@ app.layout = html.Div([
         'left': 0,
     }),
 
-    # Page content
     html.Div(
         id='page-content',
         style={
@@ -109,15 +108,14 @@ def gap():
 
 
 def nav_link(label, number, href, active):
-    is_active = active
     return dcc.Link([
         html.Span(f"{number} ", style={
-            'color': C['blue'] if is_active else C['muted'],
+            'color': C['blue'] if active else C['muted'],
             'fontFamily': 'monospace',
             'fontSize': '10px'
         }),
         html.Span(label, style={
-            'color': C['text'] if is_active else C['muted'],
+            'color': C['text'] if active else C['muted'],
             'fontFamily': 'monospace',
             'fontSize': '13px'
         })
@@ -126,22 +124,21 @@ def nav_link(label, number, href, active):
         'textDecoration': 'none',
         'padding': '10px 12px',
         'marginBottom': '4px',
-        'borderLeft': f'2px solid {C["blue"] if is_active else "transparent"}',
-        'background': f'{C["blue"]}11' if is_active else 'transparent',
+        'borderLeft': f'2px solid {C["blue"] if active else "transparent"}',
+        'background': f'{C["blue"]}11' if active else 'transparent',
         'transition': 'all 0.2s'
     })
 
 
 # ══════════════════════════════════════════════════════════════
-# CALLBACK: SIDEBAR (updates active state)
+# CALLBACK: SIDEBAR
 # ══════════════════════════════════════════════════════════════
 @app.callback(
     Output('sidebar', 'children'),
     Input('url', 'pathname')
 )
-def sidebar(pathname):
+def update_sidebar(pathname):
     return [
-        # Logo
         html.Div([
             html.Div("📈", style={'fontSize': '28px'}),
             html.Div("QUANTIFY", style={
@@ -159,7 +156,6 @@ def sidebar(pathname):
             }),
         ], style={'marginBottom': '40px', 'textAlign': 'center'}),
 
-        # Nav label
         html.Div("NAVIGATION", style={
             'color': C['muted'],
             'fontSize': '9px',
@@ -168,7 +164,6 @@ def sidebar(pathname):
             'marginBottom': '12px'
         }),
 
-        # Nav links
         nav_link("Stock Analyzer",      "01", '/',
                  pathname == '/' or pathname == ''),
         nav_link("Stock Screener",      "02", '/screener',
@@ -193,7 +188,6 @@ def page_analyzer():
             'fontWeight': '800', 'margin': '0 0 24px 0'
         }),
 
-        # Input + signal badge
         html.Div([
             html.Label("TICKER", style={
                 'color': C['muted'], 'fontFamily': 'monospace',
@@ -247,8 +241,7 @@ def page_screener():
                }),
 
         html.Div(id='screener-results'),
-        dcc.Interval(id='screener-trigger',
-                     interval=500, max_intervals=1)
+        dcc.Interval(id='screener-trigger', interval=500, max_intervals=1)
     ])
 
 
@@ -463,15 +456,13 @@ def update_analyzer(ticker):
 
 
 # ══════════════════════════════════════════════════════════════
-# CALLBACK 2 — SCREENER (auto-loads)
+# CALLBACK 2 — SCREENER
 # ══════════════════════════════════════════════════════════════
 @app.callback(
     Output('screener-results', 'children'),
     Input('screener-trigger',  'n_intervals')
 )
 def update_screener(n):
-
-    # Loading state
     if n is None:
         return html.P("Loading...",
                       style={'color': C['muted'],
@@ -516,12 +507,10 @@ def update_screener(n):
                       style={'color': C['muted'],
                              'fontFamily': 'monospace'})
 
-    results = sorted(results,
-                     key=lambda x: x['_sharpe'], reverse=True)
+    results = sorted(results, key=lambda x: x['_sharpe'], reverse=True)
 
     headers = ['Rank', 'Ticker', 'Annual Return',
-               'Volatility', 'Sharpe', 'Momentum (20d)',
-               'Max Drawdown']
+               'Volatility', 'Sharpe', 'Momentum (20d)', 'Max Drawdown']
 
     header_row = html.Tr([
         html.Th(h, style={
@@ -575,15 +564,13 @@ def update_screener(n):
 
     return html.Div([
         html.P(
-            f"{len(results)} stocks screened · "
-            f"Sorted by Sharpe Ratio",
+            f"{len(results)} stocks screened · Sorted by Sharpe Ratio",
             style={
                 'color': C['muted'],
                 'fontFamily': 'monospace',
                 'fontSize': '11px',
                 'marginBottom': '16px'
             }),
-        # Scrollable table wrapper
         html.Div(
             html.Table(
                 [html.Thead(header_row), html.Tbody(rows)],
@@ -594,9 +581,9 @@ def update_screener(n):
                 }
             ),
             style={
-                'overflowX': 'auto',   # horizontal scroll on small screens
+                'overflowX': 'auto',
                 'overflowY': 'auto',
-                'maxHeight': '70vh',   # vertical scroll — shows all rows
+                'maxHeight': '70vh',
             }
         )
     ])
@@ -686,7 +673,7 @@ def update_optimizer(tickers_str):
             size=3, opacity=0.5,
             colorbar=dict(
                 title='Sharpe',
-                x=0.85,          # push colorbar left so legend doesn't overlap
+                x=0.85,
                 thickness=15
             )
         ),
@@ -698,14 +685,16 @@ def update_optimizer(tickers_str):
         name='Optimal'
     ))
     frontier_fig.update_layout(
-    **dark_layout('Efficient Frontier — 5,000 Random Portfolios'),
-    legend=dict(
-        bgcolor=C['surface'],
-        x=0.01, y=0.99,
-        xanchor='left', yanchor='top'
+        **dark_layout('Efficient Frontier — 5,000 Random Portfolios'),
+        legend=dict(
+            bgcolor=C['surface'],
+            x=0.01, y=0.99,
+            xanchor='left', yanchor='top'
+        )
     )
-)
-    frontier_fig.update_layout(margin=dict(t=60, b=40, l=60, r=120))
+    frontier_fig.update_layout(
+        margin=dict(t=60, b=40, l=60, r=120)
+    )
 
     # Weights chart
     weights_fig = go.Figure()
@@ -727,7 +716,6 @@ def update_optimizer(tickers_str):
 
 
 # ── Run ───────────────────────────────────────────────────────
-import os
 if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
