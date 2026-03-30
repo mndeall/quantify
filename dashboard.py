@@ -25,7 +25,7 @@ C = {
     'text':    '#e2e8f0',
 }
 
-# ── Top S&P 500 stocks ────────────────────────────────────────
+# ── Top 30 S&P 500 stocks used by the screener ────────────────
 SP500_TOP30 = [
     'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL',
     'META', 'TSLA', 'JPM', 'V', 'WMT',
@@ -39,6 +39,7 @@ SP500_TOP30 = [
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
 
+    # Sidebar is dynamically rebuilt by callback to reflect active page
     html.Div(id='sidebar', style={
         'width': '220px',
         'minHeight': '100vh',
@@ -50,6 +51,7 @@ app.layout = html.Div([
         'left': 0,
     }),
 
+    # Main content area — populated by the router callback
     html.Div(
         id='page-content',
         style={
@@ -64,6 +66,11 @@ app.layout = html.Div([
 
 # ── Helpers ───────────────────────────────────────────────────
 def make_card(title, value, color=None):
+    """
+    Returns a styled metric card with a title label and a value.
+    Color of the top border and value text reflects the metric status
+    (green = good, red = bad, amber = neutral).
+    """
     color = color or C['blue']
     return html.Div([
         html.Div(title, style={
@@ -91,6 +98,10 @@ def make_card(title, value, color=None):
 
 
 def dark_layout(title=''):
+    """
+    Returns a shared Plotly layout dictionary with dark theme styling.
+    Applied to all charts for visual consistency across the dashboard.
+    """
     return dict(
         title=title,
         paper_bgcolor=C['surface'],
@@ -104,10 +115,15 @@ def dark_layout(title=''):
 
 
 def gap():
+    """Returns an empty div used as vertical spacing between charts."""
     return html.Div(style={'marginBottom': '32px'})
 
 
 def nav_link(label, number, href, active):
+    """
+    Returns a styled sidebar navigation link.
+    Highlights with a blue left border and background when active.
+    """
     return dcc.Link([
         html.Span(f"{number} ", style={
             'color': C['blue'] if active else C['muted'],
@@ -138,6 +154,11 @@ def nav_link(label, number, href, active):
     Input('url', 'pathname')
 )
 def update_sidebar(pathname):
+    """
+    Rebuilds the sidebar on every page navigation.
+    Reads the current URL pathname to determine which link is active
+    and applies the active highlight style accordingly.
+    """
     return [
         html.Div([
             html.Div("📈", style={'fontSize': '28px'}),
@@ -177,6 +198,12 @@ def update_sidebar(pathname):
 # PAGES
 # ══════════════════════════════════════════════════════════════
 def page_analyzer():
+    """
+    Layout for Page 1 — Stock Analyzer.
+    Contains a ticker input, metric cards, price chart,
+    RSI indicator chart, and daily returns bar chart.
+    All charts are populated by the update_analyzer callback.
+    """
     return html.Div([
         html.Div("01 / STOCK ANALYZER", style={
             'color': C['muted'], 'fontFamily': 'monospace',
@@ -224,6 +251,11 @@ def page_analyzer():
 
 
 def page_screener():
+    """
+    Layout for Page 2 — Stock Screener.
+    Auto-loads on mount using a one-shot dcc.Interval trigger.
+    Results are populated by the update_screener callback.
+    """
     return html.Div([
         html.Div("02 / STOCK SCREENER", style={
             'color': C['muted'], 'fontFamily': 'monospace',
@@ -246,6 +278,12 @@ def page_screener():
 
 
 def page_optimizer():
+    """
+    Layout for Page 3 — Portfolio Optimizer.
+    User enters comma-separated tickers.
+    Results are populated by the update_optimizer callback which runs
+    Monte Carlo simulation and Markowitz optimization.
+    """
     return html.Div([
         html.Div("03 / PORTFOLIO OPTIMIZER", style={
             'color': C['muted'], 'fontFamily': 'monospace',
@@ -302,6 +340,12 @@ def page_optimizer():
     Input('url', 'pathname')
 )
 def display_page(pathname):
+    """
+    Routes the user to the correct page based on the URL pathname.
+    / → Stock Analyzer
+    /screener → Stock Screener
+    /optimizer → Portfolio Optimizer
+    """
     if pathname == '/screener':
         return page_screener()
     elif pathname == '/optimizer':
@@ -322,6 +366,21 @@ def display_page(pathname):
     Input('ticker-input',   'value')
 )
 def update_analyzer(ticker):
+    """
+    Triggered when the user types a ticker symbol.
+    Downloads 1 year of daily OHLCV data from Yahoo Finance.
+
+    Calculates:
+    - Total return, annualized return, annualized volatility
+    - Sharpe ratio (return / volatility)
+    - Maximum drawdown (worst peak-to-trough decline)
+    - RSI (14-day Relative Strength Index)
+    - 50-day and 200-day moving averages
+    - Buy/Hold/Sell signal based on RSI + price vs MA50
+
+    Returns metric cards, price chart, RSI chart,
+    returns bar chart, and a signal badge.
+    """
     if not ticker:
         ticker = 'AAPL'
     ticker = ticker.upper().strip()
@@ -342,26 +401,28 @@ def update_analyzer(ticker):
     close   = df['Close'].squeeze()
     returns = close.pct_change().dropna()
 
-    # Metrics
+    # ── Metrics ───────────────────────────────────────────────
     annual_return = returns.mean() * 252
     annual_vol    = returns.std() * np.sqrt(252)
     sharpe        = annual_return / annual_vol
     max_dd        = ((close - close.cummax()) / close.cummax()).min()
     total_return  = (close.iloc[-1] / close.iloc[0]) - 1
 
-    # RSI
+    # ── RSI (14-day) ──────────────────────────────────────────
     delta = close.diff()
     gain  = delta.clip(lower=0).rolling(14).mean()
     loss  = (-delta.clip(upper=0)).rolling(14).mean()
     rsi   = 100 - (100 / (1 + gain / loss))
 
-    # Moving averages + signal
+    # ── Moving Averages + Signal ──────────────────────────────
     ma50       = close.rolling(50).mean()
     ma200      = close.rolling(200).mean()
     last_rsi   = rsi.iloc[-1]
     last_price = close.iloc[-1]
     last_ma50  = ma50.iloc[-1]
 
+    # Signal logic: BUY if oversold + above MA50, SELL if overbought
+    # + below MA50, otherwise HOLD
     if last_rsi < 35 and last_price > last_ma50:
         sig = ("BUY",  C['green'])
     elif last_rsi > 65 and last_price < last_ma50:
@@ -380,7 +441,7 @@ def update_analyzer(ticker):
         'letterSpacing': '0.1em'
     })
 
-    # Cards
+    # ── Metric Cards ──────────────────────────────────────────
     cards = [
         make_card("Total Return",
                   f"{total_return:+.1%}",
@@ -400,7 +461,7 @@ def update_analyzer(ticker):
                   else C['amber']),
     ]
 
-    # Price chart
+    # ── Price Chart with Moving Averages ──────────────────────
     price_fig = go.Figure()
     price_fig.add_trace(go.Scatter(
         x=close.index, y=close, name='Price',
@@ -423,7 +484,7 @@ def update_analyzer(ticker):
         )
     )
 
-    # RSI chart
+    # ── RSI Chart with Overbought/Oversold Lines ──────────────
     rsi_fig = go.Figure()
     rsi_fig.add_trace(go.Scatter(
         x=rsi.index, y=rsi, name='RSI',
@@ -439,7 +500,7 @@ def update_analyzer(ticker):
     )
     rsi_fig.update_yaxes(range=[0, 100])
 
-    # Returns chart
+    # ── Daily Returns Bar Chart ───────────────────────────────
     colors = [C['green'] if r > 0 else C['red'] for r in returns]
     returns_fig = go.Figure()
     returns_fig.add_trace(go.Bar(
@@ -456,13 +517,27 @@ def update_analyzer(ticker):
 
 
 # ══════════════════════════════════════════════════════════════
-# CALLBACK 2 — SCREENER
+# CALLBACK 2 — STOCK SCREENER
 # ══════════════════════════════════════════════════════════════
 @app.callback(
     Output('screener-results', 'children'),
     Input('screener-trigger',  'n_intervals')
 )
 def update_screener(n):
+    """
+    Triggered once automatically when the screener page loads
+    via a dcc.Interval with max_intervals=1.
+
+    Downloads 1 year of data for all 30 S&P 500 stocks,
+    calculates key metrics for each, sorts by Sharpe ratio,
+    and renders a scrollable ranked table.
+
+    Metrics per stock:
+    - Annualized return and volatility
+    - Sharpe ratio (primary sort key)
+    - 20-day price momentum
+    - Maximum drawdown
+    """
     if n is None:
         return html.P("Loading...",
                       style={'color': C['muted'],
@@ -590,7 +665,7 @@ def update_screener(n):
 
 
 # ══════════════════════════════════════════════════════════════
-# CALLBACK 3 — OPTIMIZER
+# CALLBACK 3 — PORTFOLIO OPTIMIZER
 # ══════════════════════════════════════════════════════════════
 @app.callback(
     Output('optimizer-stats', 'children'),
@@ -599,6 +674,22 @@ def update_screener(n):
     Input('optimizer-input',  'value')
 )
 def update_optimizer(tickers_str):
+    """
+    Triggered when the user enters a comma-separated list of tickers.
+    Downloads 2 years of data and runs Markowitz portfolio optimization.
+
+    Steps:
+    1. Download historical closing prices for all tickers
+    2. Calculate log returns and covariance matrix
+    3. Run Monte Carlo simulation (5,000 random portfolios)
+       to approximate the efficient frontier
+    4. Use scipy SLSQP optimization to find the portfolio
+       that maximizes the Sharpe ratio
+    5. Return metric cards, efficient frontier scatter plot,
+       and optimal weights bar chart
+
+    Constraints: weights sum to 1, no short selling (0 <= w <= 1)
+    """
     empty = go.Figure()
     empty.update_layout(**dark_layout())
 
@@ -627,11 +718,12 @@ def update_optimizer(tickers_str):
     n = len(tickers)
 
     def port_stats(w):
+        """Calculate annualized return, volatility, and Sharpe for weights w."""
         ret = np.sum(returns.mean() * w) * 252
         vol = np.sqrt(np.dot(w.T, np.dot(returns.cov() * 252, w)))
         return ret, vol, ret / vol
 
-    # Monte Carlo
+    # ── Monte Carlo Simulation ────────────────────────────────
     mc_ret, mc_vol, mc_sharpe = [], [], []
     for _ in range(5000):
         w = np.random.random(n)
@@ -641,10 +733,10 @@ def update_optimizer(tickers_str):
         mc_vol.append(v)
         mc_sharpe.append(s)
 
-    # Optimize
+    # ── Markowitz Optimization ────────────────────────────────
     result = optimization.minimize(
-        fun=lambda w: -port_stats(w)[2],
-        x0=np.ones(n) / n,
+        fun=lambda w: -port_stats(w)[2],   # minimize negative Sharpe
+        x0=np.ones(n) / n,                 # start from equal weights
         method='SLSQP',
         bounds=tuple((0, 1) for _ in range(n)),
         constraints={'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
@@ -652,7 +744,7 @@ def update_optimizer(tickers_str):
 
     opt_ret, opt_vol, opt_sharpe = port_stats(result.x)
 
-    # Cards
+    # ── Metric Cards ──────────────────────────────────────────
     cards = [
         make_card("Expected Return",
                   f"{opt_ret:+.1%}",
@@ -663,7 +755,7 @@ def update_optimizer(tickers_str):
                   C['green'] if opt_sharpe > 1 else C['amber']),
     ]
 
-    # Efficient Frontier
+    # ── Efficient Frontier Chart ──────────────────────────────
     frontier_fig = go.Figure()
     frontier_fig.add_trace(go.Scatter(
         x=mc_vol, y=mc_ret, mode='markers',
@@ -696,7 +788,7 @@ def update_optimizer(tickers_str):
         margin=dict(t=60, b=40, l=60, r=120)
     )
 
-    # Weights chart
+    # ── Optimal Weights Bar Chart ─────────────────────────────
     weights_fig = go.Figure()
     weights_fig.add_trace(go.Bar(
         x=tickers,
